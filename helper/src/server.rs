@@ -43,6 +43,7 @@ struct StatusBody {
     capture_source: Option<String>,
     routing_mode: String,
     browsers: Vec<String>,
+    chosen_browser: Option<String>,
     listen: String,
 }
 
@@ -88,6 +89,7 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
         capture_source: pulse.capture_source.clone(),
         routing_mode: pulse.routing_mode.clone(),
         browsers: browser::available_browsers(),
+        chosen_browser: browser::chosen_browser(),
         listen: state.listen_url.clone(),
     })
 }

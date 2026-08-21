@@ -18,6 +18,9 @@ struct Args {
     /// HTTP / WebSocket listen address
     #[arg(long, default_value = "127.0.0.1:17373")]
     listen: String,
+    /// Chromium-based browser to open (name or path). Also: MEET123_BROWSER
+    #[arg(long, env = "MEET123_BROWSER")]
+    browser: Option<String>,
     /// Do not open a Chromium-based browser
     #[arg(long)]
     no_open: bool,
@@ -36,6 +39,7 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+    browser::set_preferred(args.browser.clone());
     let web_root = server::find_web_root()?;
     info!("serving UI from {}", web_root.display());
 
@@ -62,6 +66,9 @@ async fn main() -> Result<()> {
     let addr: SocketAddr = args.listen.parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!("listening on {listen_url}");
+    if let Some(bin) = browser::chosen_browser() {
+        info!("browser {bin}");
+    }
 
     if !args.no_open {
         match browser::open_in_chromium(&listen_url) {

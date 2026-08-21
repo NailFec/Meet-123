@@ -16,6 +16,10 @@ pub fn tips(desktop: &str) -> Vec<String> {
     let desktop = desktop.to_ascii_lowercase();
     if desktop.contains("niri") {
         tips.push(
+            "niri：中转窗口必须落在一块「正在显示」的输出上。划到看不见的 workspace / 视口外时，niri 大约只给 1Hz 刷新，Meet 会非常卡。可以放在另一块显示器上不聚焦，但不要藏进后台。"
+                .into(),
+        );
+        tips.push(
             "niri 可选：捕获时选 Dynamic Cast Target，再用 niri 快捷键切换窗口/显示器。本程序不会改 config.kdl。"
                 .into(),
         );
@@ -25,6 +29,10 @@ pub fn tips(desktop: &str) -> Vec<String> {
         );
     }
     if desktop.contains("kde") || desktop.contains("plasma") {
+        tips.push(
+            "KDE：换虚拟桌面通常比 niri 藏窗口更顺（概览还要缩略图）。不要最小化中转窗口；被完全挡住时 Chrome 也可能掉帧。"
+                .into(),
+        );
         tips.push(
             "KDE：用系统自带的屏幕/窗口对话框即可，需要 xdg-desktop-portal-kde。本程序不会改 kwinrc。"
                 .into(),

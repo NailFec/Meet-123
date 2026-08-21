@@ -2,6 +2,7 @@
 	import { fetchApps, fetchSources, fetchStatus, startAudio, stopAudio } from '$lib/api';
 	import { startPcmPlayback, type AudioPlayback } from '$lib/audio';
 	import { captureDisplay, PRESETS, readCaptureStats, stopStream } from '$lib/capture';
+	import { onPageVisible, pageIsHidden, setWakeLock } from '$lib/keepalive';
 	import type { AudioApp, AudioSource, CaptureStats, HelperStatus } from '$lib/types';
 
 	let presenting = $state(false);
@@ -28,8 +29,10 @@
 	let audioError = $state('');
 	let playback = $state.raw<AudioPlayback | null>(null);
 	let stopPlayback: (() => Promise<void>) | null = null;
+	let surfaceHidden = $state(false);
 
 	const capturing = $derived(stream !== null);
+	const keepAlive = $derived(capturing || audioActive || presenting);
 	const preset = $derived(PRESETS.find((item) => item.id === presetId) ?? PRESETS[3]);
 	const target = $derived({
 		width: preset.width || customWidth,
@@ -38,6 +41,11 @@
 	});
 
 	void refreshHelper();
+	surfaceHidden = pageIsHidden();
+
+	$effect(() => {
+		void setWakeLock(keepAlive);
+	});
 
 	function attachStage(node: HTMLVideoElement) {
 		const current = stream;
@@ -185,13 +193,18 @@
 		}
 	}
 
+	function onVisibilityChange() {
+		surfaceHidden = pageIsHidden();
+		if (!surfaceHidden) void onPageVisible();
+	}
+
 	function onFullscreenChange() {
 		if (!document.fullscreenElement) presenting = false;
 	}
 </script>
 
 <svelte:window onkeydown={onKeydown} />
-<svelte:document onfullscreenchange={onFullscreenChange} />
+<svelte:document onfullscreenchange={onFullscreenChange} onvisibilitychange={onVisibilityChange} />
 
 <div class={['shell', presenting && 'presenting']}>
 	<section class="stage">
@@ -206,6 +219,12 @@
 		{/if}
 		{#if presenting}
 			<div class="present-hint">按 Esc 或 F 退出演示布局</div>
+		{/if}
+		{#if surfaceHidden && capturing}
+			<div class="hidden-warn">
+				窗口当前不可见。niri 对看不见的窗口大约 1fps；请放到另一块仍在显示的屏幕上，不要藏进后台
+				workspace。
+			</div>
 		{/if}
 	</section>
 
@@ -320,7 +339,7 @@
 		<section>
 			<h2>3. 交给 Meet</h2>
 			<ol>
-				<li>把本标签页放到<strong>不共享</strong>的那块屏，点「演示布局」或按 F 全屏。</li>
+				<li>把本标签页放到<strong>另一块仍在显示的屏幕</strong>上全屏（不要放进 niri 看不见的 workspace）。</li>
 				<li>Meet → 立即展示 → <strong>一个标签页</strong> → 勾选共享标签页音频。</li>
 				<li>Meet 里打开「优化动态视频」，不要用优化文字。</li>
 			</ol>
@@ -402,6 +421,18 @@
 		opacity: 0;
 		transition: opacity 0.3s;
 		font-size: 0.85rem;
+	}
+
+	.hidden-warn {
+		position: absolute;
+		top: 1rem;
+		left: 1rem;
+		right: 1rem;
+		padding: 0.65rem 0.85rem;
+		background: #3b2f12;
+		color: var(--warn);
+		border-radius: 8px;
+		font-size: 0.9rem;
 	}
 
 	.stage:hover .present-hint {

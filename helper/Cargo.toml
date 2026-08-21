@@ -9,7 +9,7 @@ license = "MIT"
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 bytes = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 ksni = "0.3"
 open = "5"

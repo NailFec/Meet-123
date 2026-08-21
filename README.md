@@ -44,23 +44,32 @@ Rebuild with `make run` (or `make web` / `make helper`) only after you change th
 4. In Meet: Present now → A tab → enable tab audio.
 5. In Meet, turn on Optimize for motion/video, not text sharpness.
 
-Switching away from the relay tab after Meet is presenting it is normal and should keep working. Do not close the tab or quit the helper.
+Switching away from the relay tab after Meet is presenting it is fine. On niri: niri only sends about 1 Hz frame callbacks to invisible windows, so Meet looks extremely stuttery. KDE is usually smoother on another virtual desktop because overview still wants thumbnails; do not minimize the window.
+
+To fix the stuttery problem on niri, you can try these methods:
+- Normal way, the problem might not exist.
+- Put the browser page on the screen with even 1 px visible area.
+- Open the browser with this app, which will include some flags to disable stuttery on the background.
+- Use another browser, and open it with this app.
 
 ### Helper flags
 
 ```bash
 ./helper/target/release/meet123 --listen 127.0.0.1:17373
+./helper/target/release/meet123 --browser vivaldi
 ./helper/target/release/meet123 --no-open
 ./helper/target/release/meet123 --no-tray
 ```
+
+`--browser` also reads `MEET123_BROWSER`. If unset, the helper prefers Chrome/Chromium, then Vivaldi, then Brave, then Edge (not Chrome Unstable).
 
 ### Desktop notes
 
 These are optional tips, not extra dependencies:
 
 - **Any desktop:** use the system screen/window dialog that Chrome opens.
-- **niri:** you can pick Dynamic Cast Target and change the source with niri binds; `block-out-from "screencast"` can hide Meet or password windows. This project never edits `config.kdl`.
-- **KDE Plasma:** use the portal-kde picker. This project never edits `kwinrc`.
+- **niri:** keep the relay window on a live output (the unused monitor). Off-screen workspaces refresh at about 1 Hz. You can pick Dynamic Cast Target and change the source with niri binds; `block-out-from "screencast"` can hide Meet or password windows. This project never edits `config.kdl`.
+- **KDE Plasma:** another virtual desktop is usually OK; minimized windows often stutter. Use the portal-kde picker. This project never edits `kwinrc`.
 
 ## Contributing
 
