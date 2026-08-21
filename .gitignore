@@ -1,0 +1,8 @@
+node_modules
+web/node_modules
+web/.svelte-kit
+web/build
+helper/target
+.DS_Store
+.env
+.env.*
