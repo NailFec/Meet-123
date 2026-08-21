@@ -1,60 +1,113 @@
 # Meet-123
 
-Linux 上 Google Meet **网页版无法整屏带系统音频** 的中转工具。把指定屏幕/窗口画到一个 Chrome 标签页里，再把电脑正在播放的声音注入这个标签页，然后在 Meet 里 **共享该标签页并勾选标签页音频**。
+On Linux, Google Meet in Chrome can share a tab with tab audio, but sharing a whole screen or window with system audio does not work. **Meet-123** is a local relay for that gap.
 
-不绑定某种桌面：画面走当前会话的 `xdg-desktop-portal`（niri / KDE Plasma / GNOME 各自的选择器），声音走 PipeWire（Pulse 兼容层）。不需要 root，也不会改 niri 或 KWin 配置。
+It captures a monitor or window into a dedicated Chromium tab, injects the audio your computer is already playing into that tab, and you present that tab in Meet with "Also share tab audio" enabled. Capture uses your session's xdg-desktop-portal (niri, KDE Plasma, GNOME, and other portals each supply their own picker). Audio uses PipeWire or PulseAudio. No root, and the helper does not write compositor config such as niri `config.kdl` or KDE `kwinrc`.
 
-## 限制（做不到的）
+Meet still re-encodes the stream. You can capture at 1440p and 60–120 fps; remote viewers are usually closer to 1080p and 15–30 fps. Do not capture the same screen that shows the relay tab, or you get a hall of mirrors. Dual monitors: full-screen the relay on screen A, capture screen B.
 
-- Meet 会再编码一次。本页可以按 1440p / 60–120fps 捕获，对端通常仍是大约 1080p、15–30fps。
-- 不要捕获「放着这个中转页」的那块屏，否则会镜像回授。双屏：中转页在 A 屏全屏，捕获 B 屏。
-- 系统音频在 Linux 上不能靠 Meet 的「共享整屏」开关；只能走标签页音频。
+## Requirements
 
-## 依赖
+- Linux (Wayland preferred; X11 can still capture via Chrome)
+- A Chromium-based browser: Chrome, Chromium, Microsoft Edge, Vivaldi, or Brave
+- PipeWire (typical) or PulseAudio, with `pactl` and `parec` (often `libpulse` / `pulseaudio-utils`)
+- A working screen-share portal: `xdg-desktop-portal-kde` on KDE, `xdg-desktop-portal-gnome` on niri and GNOME
+- To build: Node.js (npm) and a Rust toolchain (`cargo`, `rustc`)
 
-- Chromium 内核浏览器：Chrome / Chromium / Edge / Vivaldi / Brave
-- PipeWire（或 PulseAudio）以及 `pactl`、`parec`（Arch/CachyOS 一般在 `libpulse` / `pulseaudio-utils`）
-- 屏幕共享门户：KDE 用 `xdg-desktop-portal-kde`，niri 用 `xdg-desktop-portal-gnome`，GNOME 同 gnome 门户
-- 构建：Node.js、Rust
+## Usage
 
-## 使用
+### First build
+
+From the repository root:
 
 ```bash
-cd web && npm install && npm run build
-cd ../helper && cargo run --release
+make run
 ```
 
-助手会创建静音输出 `Meet123Silent`、在托盘显示图标（没有托盘也没关系），并打开 Chromium 内核浏览器。
+This installs web dependencies, builds the static UI, compiles the helper, then starts it. The helper creates a silent sink named `Meet123Silent`, may show a tray icon (optional), and opens a Chromium-based browser on `http://127.0.0.1:17373`.
 
-1. 把中转页放到 **不打算共享** 的屏幕，必要时点「演示布局」或按 `F` 全屏。
-2. 选质量预设，点「捕获屏幕 / 窗口」，在系统对话框里选 **另一块屏或某个窗口**。
-3. 点「开始注入系统音频」（默认采集你正在听的输出）。
-4. Google Meet → **立即展示** → **一个标签页** → 勾选共享标签页音频。
-5. Meet 里打开 **优化动态视频**。
+### Later runs
 
-开发时可以两边一起跑：
+You do not need `make run` every time. After a successful build:
 
 ```bash
-# 终端 1
+./helper/target/release/meet123
+```
+
+Rebuild with `make run` (or `make web` / `make helper`) only after you change the code. Leave the helper running while you present; stopping it stops system audio in the tab.
+
+### Present in Google Meet
+
+1. Put the relay tab on a screen you will not share. Use Present layout or press `F` to full-screen it.
+2. Choose a quality preset, then Capture screen / window. In the desktop picker, select the other monitor or a window.
+3. Start injecting system audio. The default source is whatever you currently hear. You can instead tick specific apps, or enable “exclude the browser” if the silent sink is missing.
+4. In Meet: Present now → A tab → enable tab audio.
+5. In Meet, turn on Optimize for motion/video, not text sharpness.
+
+Switching away from the relay tab after Meet is presenting it is normal and should keep working. Do not close the tab or quit the helper.
+
+### Helper flags
+
+```bash
+./helper/target/release/meet123 --listen 127.0.0.1:17373
+./helper/target/release/meet123 --no-open
+./helper/target/release/meet123 --no-tray
+```
+
+### Desktop notes
+
+These are optional tips, not extra dependencies:
+
+- **Any desktop:** use the system screen/window dialog that Chrome opens.
+- **niri:** you can pick Dynamic Cast Target and change the source with niri binds; `block-out-from "screencast"` can hide Meet or password windows. This project never edits `config.kdl`.
+- **KDE Plasma:** use the portal-kde picker. This project never edits `kwinrc`.
+
+## Contributing
+
+### Development
+
+Layout:
+
+- [`web/`](web/) — SvelteKit static relay page
+- [`helper/`](helper/) — user-session helper (PipeWire/Pulse capture, WebSocket PCM, tray, browser launch)
+
+Frontend and helper together:
+
+```bash
+# terminal 1
 cd helper && cargo run -- --no-open
 
-# 终端 2
+# terminal 2
 cd web && npm run dev
 ```
 
-常用参数：`--listen 127.0.0.1:17373`、`--no-open`、`--no-tray`。
+Vite proxies `/api` and `/ws` to `127.0.0.1:17373`. Check the UI with `cd web && npm run check`. The helper is a normal Cargo crate under `helper/`.
 
-## 音频回授
+### AI usage
 
-中转页会尽量把播放出口切到 `Meet123Silent`，本机听感不变，Meet 采的是标签页内部声音。如果浏览器列不出这个设备，页面会改走「排除浏览器」路由，避免自己录自己。也可以手动勾选「只共享某些应用」。
+AI-written code is allowed. A human must review all of it before it is merged.
 
-## 桌面差异（可选，不是依赖）
+All prose must be written by a human. That includes user-facing strings in the repo, issue text, and pull request titles and bodies. Do not paste model output into those places.
 
-- **所有桌面**：用系统弹出的屏幕/窗口选择器即可。
-- **niri**：可以选 Dynamic Cast Target，再用 niri 快捷键改捕获源；可用 `block-out-from "screencast"` 挡住 Meet/密码窗口。本程序不会写 `config.kdl`。
-- **KDE Plasma**：用 `xdg-desktop-portal-kde` 的对话框。本程序不会写 `kwinrc`。
+Each pull request must name the AI tools and models used.
 
-## 仓库结构
+## License
 
-- [`web/`](web/) SvelteKit 静态中转页
-- [`helper/`](helper/) 用户态助手：PipeWire/Pulse 采集、WebSocket PCM、托盘、打开浏览器
+This project is licensed under the **GNU General Public License v3.0** (GPLv3).
+
+See the [LICENSE](LICENSE) file for the full text.
+
+```
+Copyright (C) 2026 NailFec
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+```
+
