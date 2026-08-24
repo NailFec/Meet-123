@@ -13,7 +13,10 @@ use tokio::sync::{Mutex, Notify};
 use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
-#[command(name = "meet123", about = "Google Meet Linux tab relay with system audio")]
+#[command(
+    name = "meet123",
+    about = "Google Meet Linux tab relay with system audio"
+)]
 struct Args {
     /// HTTP / WebSocket listen address
     #[arg(long, default_value = "127.0.0.1:17373")]
@@ -53,6 +56,7 @@ async fn main() -> Result<()> {
         pulse: Arc::new(Mutex::new(pulse)),
         listen_url: listen_url.clone(),
         web_root,
+        follow: Arc::new(Mutex::new(None)),
     };
 
     let shutdown = Arc::new(Notify::new());
@@ -89,6 +93,12 @@ async fn main() -> Result<()> {
 
     server.await?;
 
+    {
+        let mut follow = state.follow.lock().await;
+        if let Some(handle) = follow.take() {
+            handle.abort();
+        }
+    }
     let mut pulse = state.pulse.lock().await;
     pulse.shutdown().await?;
     info!("cleaned up PipeWire modules");

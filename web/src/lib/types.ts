@@ -34,8 +34,15 @@ export type HelperStatus = {
 	audio_running: boolean;
 	capture_source: string | null;
 	routing_mode: string;
+	playback_isolated: boolean;
 	browsers: string[];
 	listen: string;
+};
+
+export type AudioEngageResult = {
+	ok: boolean;
+	isolated: boolean;
+	routing_mode: string;
 };
 
 export type CaptureStats = {

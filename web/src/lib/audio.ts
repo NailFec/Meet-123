@@ -4,22 +4,33 @@ const WORKLET = `
 class PcmPlayerProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.capacity = 48000 * 2 * 4;
+    this.channels = 2;
+    this.target = Math.round(48000 * 0.05) * this.channels;
+    this.maxFilled = Math.round(48000 * 0.12) * this.channels;
+    this.capacity = this.maxFilled;
     this.buffer = new Float32Array(this.capacity);
     this.read = 0;
     this.write = 0;
     this.filled = 0;
+    this.primed = false;
+    this.rmsAcc = 0;
+    this.rmsN = 0;
     this.port.onmessage = (event) => {
+      if (!(event.data instanceof ArrayBuffer)) return;
       const src = new Int16Array(event.data);
-      for (let i = 0; i < src.length; i++) {
-        if (this.filled >= this.capacity) {
-          this.read = (this.read + 2) % this.capacity;
-          this.filled -= 2;
+      const count = src.length - (src.length % 2);
+      for (let i = 0; i < count; i++) {
+        if (this.filled >= this.maxFilled) {
+          while (this.filled > this.target) {
+            this.read = (this.read + 2) % this.capacity;
+            this.filled -= 2;
+          }
         }
         this.buffer[this.write] = src[i] / 32768;
         this.write = (this.write + 1) % this.capacity;
         this.filled++;
       }
+      if (!this.primed && this.filled >= this.target) this.primed = true;
     };
   }
 
@@ -28,7 +39,7 @@ class PcmPlayerProcessor extends AudioWorkletProcessor {
     const left = output[0];
     const right = output[1] || output[0];
     for (let i = 0; i < left.length; i++) {
-      if (this.filled >= 2) {
+      if (this.primed && this.filled >= 2) {
         left[i] = this.buffer[this.read];
         this.read = (this.read + 1) % this.capacity;
         right[i] = this.buffer[this.read];
@@ -38,6 +49,13 @@ class PcmPlayerProcessor extends AudioWorkletProcessor {
         left[i] = 0;
         right[i] = 0;
       }
+      this.rmsAcc += left[i] * left[i];
+      this.rmsN++;
+    }
+    if (this.rmsN >= 4800) {
+      this.port.postMessage({ type: 'level', rms: Math.sqrt(this.rmsAcc / this.rmsN) });
+      this.rmsAcc = 0;
+      this.rmsN = 0;
     }
     return true;
   }
@@ -45,39 +63,22 @@ class PcmPlayerProcessor extends AudioWorkletProcessor {
 registerProcessor('pcm-player', PcmPlayerProcessor);
 `;
 
-type AudioContextWithSink = AudioContext & {
-	setSinkId?: (id: string) => Promise<void>;
-	sinkId?: string;
-};
-
 export type AudioPlayback = {
-	sinkMode: 'silent' | 'default';
+	mode: 'isolated' | 'exclude-browser' | 'apps';
 	sinkLabel: string;
 };
 
-export async function findSilentOutputId(labelHint: string): Promise<{
-	id: string;
-	label: string;
-} | null> {
-	const probe = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-	probe.getTracks().forEach((track) => track.stop());
-	const devices = await navigator.mediaDevices.enumerateDevices();
-	const re = /meet123|Meet123Silent/i;
-	const extra = labelHint ? new RegExp(labelHint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
-	const hit = devices.find((device) => {
-		if (device.kind !== 'audiooutput') return false;
-		return re.test(device.label) || (extra ? extra.test(device.label) : false);
-	});
-	return hit ? { id: hit.deviceId, label: hit.label } : null;
-}
-
-export async function startPcmPlayback(opts: {
-	silentSinkLabel: string;
-}): Promise<{ playback: AudioPlayback; stop: () => Promise<void> }> {
+export async function startPcmPlayback(opts?: {
+	onLevel?: (rms: number) => void;
+}): Promise<{
+	connectSocket: () => Promise<void>;
+	fadeIn: () => void;
+	stop: () => Promise<void>;
+}> {
 	const ctx = new AudioContext({
 		sampleRate: 48000,
 		latencyHint: 'interactive'
-	}) as AudioContextWithSink;
+	});
 	if (ctx.state === 'suspended') await ctx.resume();
 
 	const blob = new Blob([WORKLET], { type: 'application/javascript' });
@@ -93,41 +94,48 @@ export async function startPcmPlayback(opts: {
 		numberOfOutputs: 1,
 		outputChannelCount: [2]
 	});
-	node.connect(ctx.destination);
+	const gain = ctx.createGain();
+	gain.gain.value = 0.0001;
+	node.connect(gain);
+	gain.connect(ctx.destination);
 
-	let sinkMode: AudioPlayback['sinkMode'] = 'default';
-	let sinkLabel = '系统默认输出（可能有回授，请看提示）';
-	try {
-		const silent = await findSilentOutputId(opts.silentSinkLabel);
-		if (silent && ctx.setSinkId) {
-			await ctx.setSinkId(silent.id);
-			sinkMode = 'silent';
-			sinkLabel = silent.label || opts.silentSinkLabel;
-		}
-	} catch {
-		// Keep default output; helper should already be on exclude-browser routing.
-	}
+	node.port.onmessage = (event) => {
+		if (event.data?.type === 'level') opts?.onLevel?.(event.data.rms);
+	};
 
-	const socket = new WebSocket(audioSocketUrl());
-	socket.binaryType = 'arraybuffer';
-	socket.addEventListener('message', (event) => {
-		if (event.data instanceof ArrayBuffer) {
-			node.port.postMessage(event.data, [event.data]);
-		}
-	});
-
-	await new Promise<void>((resolve, reject) => {
-		socket.addEventListener('open', () => resolve(), { once: true });
-		socket.addEventListener('error', () => reject(new Error('无法连接音频助手 WebSocket')), {
-			once: true
-		});
-	});
+	let socket: WebSocket | null = null;
 
 	return {
-		playback: { sinkMode, sinkLabel },
+		connectSocket: () => {
+			socket = new WebSocket(audioSocketUrl());
+			socket.binaryType = 'arraybuffer';
+			socket.addEventListener('message', (event) => {
+				if (event.data instanceof ArrayBuffer) {
+					node.port.postMessage(event.data, [event.data]);
+				}
+			});
+			return new Promise<void>((resolve, reject) => {
+				socket?.addEventListener('open', () => resolve(), { once: true });
+				socket?.addEventListener('error', () => reject(new Error('无法连接音频助手 WebSocket')), {
+					once: true
+				});
+			});
+		},
+		fadeIn: () => {
+			const t = ctx.currentTime;
+			gain.gain.cancelScheduledValues(t);
+			gain.gain.setValueAtTime(gain.gain.value, t);
+			gain.gain.linearRampToValueAtTime(1, t + 0.05);
+		},
 		stop: async () => {
-			socket.close();
+			if (socket) socket.close();
+			const t = ctx.currentTime;
+			gain.gain.cancelScheduledValues(t);
+			gain.gain.setValueAtTime(gain.gain.value, t);
+			gain.gain.linearRampToValueAtTime(0, t + 0.03);
+			await new Promise((resolve) => window.setTimeout(resolve, 40));
 			node.disconnect();
+			gain.disconnect();
 			await ctx.close();
 		}
 	};

@@ -1,4 +1,4 @@
-import type { AudioApp, AudioSource, HelperStatus } from './types';
+import type { AudioApp, AudioEngageResult, AudioSource, HelperStatus } from './types';
 
 async function readError(res: Response): Promise<string> {
 	try {
@@ -28,18 +28,24 @@ export async function fetchApps(): Promise<AudioApp[]> {
 	return res.json();
 }
 
-export async function startAudio(body: {
+export async function prepareAudio(body: {
 	source?: string;
 	app_indices?: number[];
 	exclude_browser?: boolean;
 	loopback?: boolean;
 }): Promise<void> {
-	const res = await fetch('/api/audio/start', {
+	const res = await fetch('/api/audio/prepare', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify(body)
 	});
 	if (!res.ok) throw new Error(await readError(res));
+}
+
+export async function engageAudio(): Promise<AudioEngageResult> {
+	const res = await fetch('/api/audio/engage', { method: 'POST' });
+	if (!res.ok) throw new Error(await readError(res));
+	return res.json();
 }
 
 export async function stopAudio(): Promise<void> {

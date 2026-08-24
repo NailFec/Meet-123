@@ -11,7 +11,9 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
@@ -21,6 +23,7 @@ pub struct AppState {
     pub pulse: Arc<Mutex<Pulse>>,
     pub listen_url: String,
     pub web_root: PathBuf,
+    pub follow: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 #[derive(Serialize)]
@@ -42,6 +45,7 @@ struct StatusBody {
     audio_running: bool,
     capture_source: Option<String>,
     routing_mode: String,
+    playback_isolated: bool,
     browsers: Vec<String>,
     chosen_browser: Option<String>,
     listen: String,
@@ -63,12 +67,19 @@ pub fn router(state: AppState) -> Router {
         .route("/api/status", get(status))
         .route("/api/sources", get(sources))
         .route("/api/apps", get(apps))
-        .route("/api/audio/start", post(audio_start))
+        .route("/api/audio/prepare", post(audio_prepare))
+        .route("/api/audio/engage", post(audio_engage))
+        .route("/api/audio/start", post(audio_prepare))
         .route("/api/audio/stop", post(audio_stop))
         .route("/api/open-browser", post(open_browser))
         .route("/ws/audio", get(ws_audio))
         .fallback_service(static_files)
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
         .with_state(state)
 }
 
@@ -88,6 +99,7 @@ async fn status(State(state): State<AppState>) -> impl IntoResponse {
         audio_running: pulse.capture_source.is_some(),
         capture_source: pulse.capture_source.clone(),
         routing_mode: pulse.routing_mode.clone(),
+        playback_isolated: pulse.playback_isolated,
         browsers: browser::available_browsers(),
         chosen_browser: browser::chosen_browser(),
         listen: state.listen_url.clone(),
@@ -108,10 +120,14 @@ async fn apps() -> impl IntoResponse {
     }
 }
 
-async fn audio_start(State(state): State<AppState>, Json(body): Json<StartBody>) -> impl IntoResponse {
+async fn audio_prepare(
+    State(state): State<AppState>,
+    Json(body): Json<StartBody>,
+) -> impl IntoResponse {
+    abort_follow(&state).await;
     let mut pulse = state.pulse.lock().await;
     match pulse
-        .start(
+        .prepare(
             body.source,
             body.app_indices.unwrap_or_default(),
             body.exclude_browser.unwrap_or(false),
@@ -119,12 +135,35 @@ async fn audio_start(State(state): State<AppState>, Json(body): Json<StartBody>)
         )
         .await
     {
-        Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(()) => Json(serde_json::json!({
+            "ok": true,
+            "routing_mode": pulse.routing_mode,
+        }))
+        .into_response(),
         Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err),
     }
 }
 
+async fn audio_engage(State(state): State<AppState>) -> impl IntoResponse {
+    let result = {
+        let mut pulse = state.pulse.lock().await;
+        match pulse.engage().await {
+            Ok(result) => result,
+            Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, err),
+        }
+    };
+    let should_follow = {
+        let pulse = state.pulse.lock().await;
+        pulse.needs_follow()
+    };
+    if should_follow {
+        spawn_follow(&state).await;
+    }
+    Json(result).into_response()
+}
+
 async fn audio_stop(State(state): State<AppState>) -> impl IntoResponse {
+    abort_follow(&state).await;
     let mut pulse = state.pulse.lock().await;
     match pulse.stop().await {
         Ok(()) => Json(serde_json::json!({ "ok": true })).into_response(),
@@ -144,21 +183,14 @@ async fn ws_audio(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl I
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
-    {
-        let mut pulse = state.pulse.lock().await;
-        if pulse.capture_source.is_none() {
-            if let Err(err) = pulse.start(None, Vec::new(), false, true).await {
-                warn!("auto-start capture failed: {err}");
-                let _ = socket
-                    .send(Message::Text(format!("error: {err}").into()))
-                    .await;
-                return;
-            }
-        }
-    }
-
     let mut rx = {
         let pulse = state.pulse.lock().await;
+        if pulse.capture_source.is_none() {
+            let _ = socket
+                .send(Message::Text("error: audio capture is not running".into()))
+                .await;
+            return;
+        }
         pulse.tx.subscribe()
     };
 
@@ -174,11 +206,13 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             frame = rx.recv() => {
                 match frame {
                     Ok(bytes) => {
-                        if socket.send(Message::Binary(bytes.into())).await.is_err() {
+                        if socket.send(Message::Binary(bytes)).await.is_err() {
                             break;
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("audio websocket lagged, dropped {n} frames");
+                    }
                     Err(_) => break,
                 }
             }
@@ -186,8 +220,39 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     }
 }
 
+async fn spawn_follow(state: &AppState) {
+    abort_follow(state).await;
+    let pulse = state.pulse.clone();
+    let mut slot = state.follow.lock().await;
+    *slot = Some(tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let mut pulse = pulse.lock().await;
+            if !pulse.needs_follow() {
+                break;
+            }
+            if let Err(err) = pulse.follow_once() {
+                warn!("audio follow: {err}");
+            }
+        }
+    }));
+}
+
+async fn abort_follow(state: &AppState) {
+    let mut slot = state.follow.lock().await;
+    if let Some(handle) = slot.take() {
+        handle.abort();
+    }
+}
+
 fn json_error(status: StatusCode, err: impl std::fmt::Display) -> axum::response::Response {
-    (status, Json(ErrorBody { error: err.to_string() })).into_response()
+    (
+        status,
+        Json(ErrorBody {
+            error: err.to_string(),
+        }),
+    )
+        .into_response()
 }
 
 pub fn find_web_root() -> Result<PathBuf> {

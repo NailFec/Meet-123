@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { fetchApps, fetchSources, fetchStatus, startAudio, stopAudio } from '$lib/api';
+	import { engageAudio, fetchApps, fetchSources, fetchStatus, prepareAudio, stopAudio } from '$lib/api';
 	import { startPcmPlayback, type AudioPlayback } from '$lib/audio';
 	import { captureDisplay, PRESETS, readCaptureStats, stopStream } from '$lib/capture';
 	import { onPageVisible, pageIsHidden, setWakeLock } from '$lib/keepalive';
@@ -28,6 +28,7 @@
 	let audioActive = $state(false);
 	let audioError = $state('');
 	let playback = $state.raw<AudioPlayback | null>(null);
+	let audioLevel = $state(0);
 	let stopPlayback: (() => Promise<void>) | null = null;
 	let surfaceHidden = $state(false);
 
@@ -120,30 +121,55 @@
 	async function startSystemAudio() {
 		audioBusy = true;
 		audioError = '';
+		audioLevel = 0;
 		try {
 			await refreshHelper();
 			const useApps = selectedApps.length > 0;
-			await startAudio({
-				source: useApps ? undefined : selectedSource || undefined,
+			const source = useApps ? undefined : selectedSource || undefined;
+			await prepareAudio({
+				source,
 				app_indices: useApps ? selectedApps : undefined,
-				exclude_browser: excludeBrowser || undefined
+				exclude_browser: excludeBrowser || undefined,
+				loopback: true
 			});
 			const session = await startPcmPlayback({
-				silentSinkLabel: helper?.silent_sink_label ?? 'Meet123Silent'
+				onLevel: (rms) => {
+					audioLevel = rms;
+				}
 			});
 			stopPlayback = session.stop;
-			playback = session.playback;
-			if (session.playback.sinkMode === 'default' && !excludeBrowser && !useApps) {
+			await new Promise((resolve) => window.setTimeout(resolve, 120));
+			let result = await engageAudio();
+			if (!result.isolated && !excludeBrowser && !useApps) {
 				excludeBrowser = true;
-				await startAudio({
-					source: selectedSource || undefined,
+				await prepareAudio({
+					source,
 					exclude_browser: true,
-					loopback: false
+					loopback: true
 				});
+				result = await engageAudio();
 			}
+			if (!result.isolated) {
+				throw new Error('无法隔离中转音频流');
+			}
+			await session.connectSocket();
+			session.fadeIn();
+			const mode = useApps ? 'apps' : result.isolated && !excludeBrowser ? 'isolated' : 'exclude-browser';
+			playback = {
+				mode,
+				sinkLabel:
+					mode === 'isolated'
+						? '已隔离中转流（本机听感不变）'
+						: mode === 'exclude-browser'
+							? '排除浏览器（本机可能多一点延迟）'
+							: '指定应用'
+			};
 			audioActive = true;
 		} catch (error) {
 			audioError = error instanceof Error ? error.message : String(error);
+			if (stopPlayback) await stopPlayback().catch(() => {});
+			stopPlayback = null;
+			playback = null;
 			await stopAudio().catch(() => {});
 		} finally {
 			audioBusy = false;
@@ -156,6 +182,7 @@
 			if (stopPlayback) await stopPlayback();
 			stopPlayback = null;
 			playback = null;
+			audioLevel = 0;
 			audioActive = false;
 			await stopAudio().catch(() => {});
 		} finally {
@@ -316,7 +343,7 @@
 			</details>
 			<label class="app">
 				<input type="checkbox" bind:checked={excludeBrowser} disabled={audioActive} />
-				排除浏览器自身（setSinkId 失败时的回授兜底）
+				排除浏览器自身（隔离失败时的回授兜底）
 			</label>
 			<div class="row">
 				<button class="primary" onclick={startSystemAudio} disabled={audioBusy || audioActive}>
@@ -327,8 +354,8 @@
 			</div>
 			{#if playback}
 				<p class="stats">
-					播放出口：{playback.sinkMode === 'silent' ? '静音槽（推荐，本机听感不变）' : '默认设备'}
-					<span class="muted"> · {playback.sinkLabel}</span>
+					播放出口：{playback.sinkLabel}
+					<span class="muted"> · 电平 {(audioLevel * 100).toFixed(0)}%</span>
 				</p>
 			{/if}
 			{#if audioError}

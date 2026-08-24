@@ -40,7 +40,7 @@ Rebuild with `make run` (or `make web` / `make helper`) only after you change th
 
 1. Put the relay tab on a screen you will not share. Use Present layout or press `F` to full-screen it.
 2. Choose a quality preset, then Capture screen / window. In the desktop picker, select the other monitor or a window.
-3. Start injecting system audio. The default source is whatever you currently hear. You can instead tick specific apps, or enable “exclude the browser” if the silent sink is missing.
+3. Start injecting system audio. The default source is whatever you currently hear. You can instead tick specific apps, or enable “exclude the browser” if isolating the relay stream fails.
 4. In Meet: Present now → A tab → enable tab audio.
 5. In Meet, turn on Optimize for motion/video, not text sharpness.
 
